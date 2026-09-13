@@ -511,7 +511,11 @@ impl IdSet {
 impl Encode for IdSet {
     fn encode<E: Encoder>(&self, encoder: &mut E) {
         encoder.write_var(self.0.len() as u32);
-        for (&client_id, block) in self.0.iter() {
+        // Match Yjs's deterministic descending client order. Hash-map iteration
+        // is not a canonical wire order, even when the deleted ranges are equal.
+        let mut clients: Vec<_> = self.0.iter().collect();
+        clients.sort_unstable_by_key(|(client, _)| std::cmp::Reverse(**client));
+        for (&client_id, block) in clients {
             encoder.reset_ds_cur_val();
             encoder.write_var(client_id);
             block.encode(encoder);
@@ -1096,6 +1100,23 @@ mod test {
     fn id_range_encode_decode() {
         roundtrip(&IdRange::Continuous(0..4));
         roundtrip(&IdRange::Fragmented(vec![1..4, 5..8]));
+    }
+
+    #[test]
+    fn id_set_encoding_matches_yjs_descending_clients() {
+        // Yjs 13.6.32: clients 124 and 1337 independently insert/delete 4 and
+        // 12 characters; encodeSnapshot(snapshot(mergedDoc)) starts with this
+        // delete set, followed by its state vector. No private structs required.
+        let expected = [2, 185, 10, 1, 0, 12, 124, 1, 0, 4];
+        for clients in [[124, 1337], [1337, 124]] {
+            let mut set = IdSet::new();
+            for client in clients {
+                set.insert(ID::new(client, 0), if client == 124 { 4 } else { 12 });
+            }
+            assert_eq!(set.encode_v1(), expected);
+            assert_eq!(IdSet::decode_v2(&set.encode_v2()).unwrap(), set);
+            roundtrip(&set);
+        }
     }
 
     #[test]
