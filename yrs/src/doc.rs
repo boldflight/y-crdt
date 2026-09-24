@@ -1254,7 +1254,9 @@ mod test {
             let u = Update::decode_v1(u.as_slice()).unwrap();
             txn.apply_update(u).unwrap();
         }
-        assert_eq!(txt.get_string(&doc.transact()), "abcd".to_string());
+        // Yjs resolves these updates to "ab". The former "abcd" result came
+        // from truncating the wide client ID in the fifth update to u32.
+        assert_eq!(txt.get_string(&doc.transact()), "ab".to_string());
     }
 
     #[test]

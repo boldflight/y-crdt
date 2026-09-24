@@ -83,9 +83,9 @@ impl<'a> DecoderV1<'a> {
     }
 
     fn read_id(&mut self) -> Result<ID, Error> {
-        let client: u32 = self.read_var()?;
+        let client: u64 = self.read_var()?;
         let clock = self.read_var()?;
-        Ok(ID::new(client as ClientID, clock))
+        Ok(ID::new(client, clock))
     }
 }
 
@@ -141,8 +141,7 @@ impl<'a> Decoder for DecoderV1<'a> {
 
     #[inline]
     fn read_client(&mut self) -> Result<ClientID, Error> {
-        let client: u32 = self.cursor.read_var()?;
-        Ok(client as ClientID)
+        self.cursor.read_var::<ClientID>()
     }
 
     #[inline]
@@ -470,6 +469,29 @@ struct StringDecoder<'a> {
     buf: &'a str,
     len_decoder: UIntOptRleDecoder<'a>,
     pos: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Decoder, DecoderV1};
+    use crate::updates::encoder::{Encoder, EncoderV1};
+    use crate::ID;
+
+    #[test]
+    fn v1_preserves_yjs_uint53_client_in_header_and_item_origin() {
+        let client = 3_234_342_256_867_106_u64;
+        let origin = ID::new(client, 64);
+        let mut encoder = EncoderV1::new();
+        encoder.write_client(client);
+        encoder.write_left_id(&origin);
+        encoder.write_right_id(&origin);
+        let encoded = encoder.to_vec();
+
+        let mut decoder = DecoderV1::from(encoded.as_slice());
+        assert_eq!(decoder.read_client().unwrap(), client);
+        assert_eq!(decoder.read_left_id().unwrap(), origin);
+        assert_eq!(decoder.read_right_id().unwrap(), origin);
+    }
 }
 
 impl<'a> StringDecoder<'a> {
