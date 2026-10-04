@@ -652,6 +652,7 @@ pub mod undo;
 pub mod format_event;
 pub mod text_items;
 pub mod snapshot_frontier;
+pub mod update_footprint;
 
 pub use crate::alt::{
     diff_updates_v1, diff_updates_v2, encode_state_vector_from_update_v1,

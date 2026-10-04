@@ -827,7 +827,7 @@ impl Decode for Update {
         // read blocks
         let clients_len: u32 = decoder.read_var()?;
         let mut clients = HashMap::with_hasher(BuildHasherDefault::default());
-        clients.try_reserve(clients_len as usize)?;
+        clients.try_reserve((clients_len as usize).min(1024))?;
 
         let mut blocks = BlockSet { clients };
         for _ in 0..clients_len {
@@ -839,16 +839,16 @@ impl Decode for Update {
                 .clients
                 .entry(client)
                 .or_insert_with(|| VecDeque::new());
-            // Attempt to pre-allocate memory for the blocks. If the capacity overflows and
-            // allocation fails, return an error.
-            blocks.try_reserve(blocks_len)?;
+            // Bound eager allocation from a declared length; grow only as actual
+            // blocks are decoded. Malformed short input cannot reserve gigabytes.
+            blocks.try_reserve(blocks_len.min(1024))?;
 
             for _ in 0..blocks_len {
                 let id = ID::new(client, clock);
                 if let Some(block) = Self::decode_block(id, decoder)? {
                     // due to bug in the past it was possible for empty bugs to be generated
                     // even though they had no effect on the document store
-                    clock += block.len();
+                    clock = clock.checked_add(block.len()).ok_or(Error::UnexpectedValue)?;
                     blocks.push_back(block);
                 }
             }
