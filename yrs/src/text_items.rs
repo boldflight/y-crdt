@@ -299,6 +299,14 @@ pub fn observe_xml<T: ReadTxn>(
         };
         match branch.type_ref() {
             TypeRef::XmlText => {
+                // Canonical XML text carries effective marks through Format items.
+                // Refuse separate node attributes rather than silently dropping them.
+                for item in branch.map.values() {
+                    step(budget)?;
+                    if !item.is_deleted() {
+                        return Err(TextItemError::Unprovable);
+                    }
+                }
                 let id = nested.ok_or(TextItemError::Target)?;
                 let mut attributes = std::collections::HashMap::new();
                 let mut runs = Vec::new();
@@ -827,6 +835,16 @@ mod tests {
         assert_eq!(
             observe_xml(&tx, &root.hook().id(), 1),
             Err(TextItemError::Limit)
+        );
+        drop(tx);
+        text.insert_attribute(
+            &mut doc.transact_mut(),
+            "unexpected",
+            Any::from("must not disappear"),
+        );
+        assert_eq!(
+            observe_xml(&doc.transact(), &root.hook().id(), 100),
+            Err(TextItemError::Unprovable)
         );
     }
     #[test]
