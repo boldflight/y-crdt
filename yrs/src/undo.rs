@@ -1,10 +1,11 @@
-use crate::block::ItemPtr;
+use crate::block::{ItemContent, ItemPtr};
 use crate::branch::{Branch, BranchPtr};
 use crate::id_set::DeleteSet;
 use crate::iter::TxnIterator;
 use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
+use crate::types::TypeRef;
 use crate::{Doc, IdSet, Observer, Transact, TransactionMut, Uuid, ID};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
@@ -182,6 +183,11 @@ where
         inner.scope.insert(ptr);
     }
 
+    /// Enable the focused XML branch deletion policy on this same manager.
+    pub fn preserve_changed_xml(&mut self, enabled: bool) {
+        self.inner_mut().options.preserve_changed_xml = enabled;
+    }
+
     pub fn docs(&self) -> impl Iterator<Item = &Doc> {
         self.state.docs.values()
     }
@@ -318,28 +324,36 @@ where
 
     define_undo_observer!(
         /// Registers a callback to be called every time a new [StackItem] is created.
-        observe_item_added, unobserve_item_added,
-        observer_added, FnMut(&TransactionMut, &mut Event<M>)
+        observe_item_added,
+        unobserve_item_added,
+        observer_added,
+        FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time an existing [StackItem] is extended.
-        observe_item_updated, unobserve_item_updated,
-        observer_updated, FnMut(&TransactionMut, &mut Event<M>)
+        observe_item_updated,
+        unobserve_item_updated,
+        observer_updated,
+        FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time a [StackItem] is popped
         /// via [UndoManager::undo] or [UndoManager::redo].
-        observe_item_popped, unobserve_item_popped,
-        observer_popped, FnMut(&TransactionMut, &mut Event<M>)
+        observe_item_popped,
+        unobserve_item_popped,
+        observer_popped,
+        FnMut(&TransactionMut, &mut Event<M>)
     );
 
     define_undo_observer!(
         /// Registers a callback to be called every time undo/redo stacks are cleared.
         /// The callback receives two booleans: `(undo_stack_cleared, redo_stack_cleared)`.
-        observe_stack_cleared, unobserve_stack_cleared,
-        observer_cleared, FnMut(&StackClearedEvent)
+        observe_stack_cleared,
+        unobserve_stack_cleared,
+        observer_cleared,
+        FnMut(&StackClearedEvent)
     );
 
     /// Extends a list of origins tracked by current undo manager by given `origin`. Origin markers
@@ -590,6 +604,7 @@ where
                     stack,
                     other,
                     &state.scope,
+                    state.options.preserve_changed_xml,
                     &mut state.observer_popped,
                     undoing,
                     origin.clone(),
@@ -624,6 +639,7 @@ where
                     stack,
                     other,
                     &state.scope,
+                    state.options.preserve_changed_xml,
                     &mut state.observer_popped,
                     undoing,
                     origin.clone(),
@@ -644,6 +660,7 @@ where
         stack: &mut UndoStack<M>,
         other: &UndoStack<M>,
         scope: &HashSet<BranchPtr>,
+        preserve_changed_xml: bool,
         observer_popped: &mut Observer<UndoFn<M>>,
         undoing: bool,
         origin: Origin,
@@ -696,12 +713,19 @@ where
                 .is_some();
         }
 
+        let protected = if preserve_changed_xml {
+            protected_xml_skeleton(&to_delete)
+        } else {
+            HashSet::new()
+        };
+
         // We want to delete in reverse order so that children are deleted before
         // parents, so we have more information available when items are filtered.
         for &item in to_delete.iter().rev() {
-            // if self.options.delete_filter(item) {
-            txn.delete(item);
-            change_performed = true;
+            if !protected.contains(&item) {
+                txn.delete(item);
+                change_performed = true;
+            }
         }
 
         txn.commit();
@@ -777,6 +801,64 @@ impl<M> UndoStack<M> {
     }
 }
 
+fn protected_xml_skeleton(owned_items: &[ItemPtr]) -> HashSet<ItemPtr> {
+    let owned: HashSet<ItemPtr> = owned_items.iter().copied().collect();
+    let xml_branch = |item: ItemPtr| -> Option<BranchPtr> {
+        if let ItemContent::Type(branch) = &item.content {
+            if matches!(branch.type_ref(), TypeRef::XmlElement(_) | TypeRef::XmlText) {
+                return Some(BranchPtr::from(branch));
+            }
+        }
+        None
+    };
+    let mut protected = HashSet::new();
+    for &root in owned_items {
+        let Some(branch) = xml_branch(root) else {
+            continue;
+        };
+        let mut parent = root.parent.as_branch().copied();
+        let mut nested_owned = false;
+        while let Some(branch) = parent {
+            let Some(item) = branch.item else { break };
+            if owned.contains(&item) && xml_branch(item).is_some() {
+                nested_owned = true;
+                break;
+            }
+            parent = item.parent.as_branch().copied();
+        }
+        if nested_owned {
+            continue;
+        }
+        let mut skeleton = HashSet::from([root]);
+        let mut pending = vec![branch];
+        let mut survivor = false;
+        while let Some(branch) = pending.pop() {
+            for &item in branch.map.values() {
+                if !item.is_deleted() {
+                    skeleton.insert(item);
+                    survivor |= !owned.contains(&item);
+                }
+            }
+            let mut next = branch.start;
+            while let Some(item) = next {
+                next = item.right;
+                if item.is_deleted() {
+                    continue;
+                }
+                survivor |= !owned.contains(&item);
+                if let Some(child) = xml_branch(item) {
+                    skeleton.insert(item);
+                    pending.push(child);
+                }
+            }
+        }
+        if survivor {
+            protected.extend(skeleton);
+        }
+    }
+    protected
+}
+
 /// Set of options used to configure [UndoManager].
 pub struct Options<M> {
     /// Undo-/redo-able updates are grouped together in time-constrained snapshots. This field
@@ -791,6 +873,11 @@ pub struct Options<M> {
     /// Custom logic decider, that along with [tracked_origins] can be used to determine if
     /// transaction changes should be captured or not.
     pub capture_transaction: Option<CaptureTransactionFn>,
+
+    /// Preserve XML type/attribute scaffolding of an owned-created subtree
+    /// when an inverse would otherwise hide surviving edits outside its StackItem.
+    /// Text and format items remain subject to the actual owned inverse.
+    pub preserve_changed_xml: bool,
 
     /// Custom clock function, that can be used to generate timestamps used by
     /// [Options::capture_timeout_millis].
@@ -812,6 +899,7 @@ impl<M> Default for Options<M> {
             capture_timeout_millis: 500,
             tracked_origins: HashSet::new(),
             capture_transaction: None,
+            preserve_changed_xml: false,
             timestamp: Arc::new(crate::sync::time::SystemClock),
             init_undo_stack: Vec::new(),
             init_redo_stack: Vec::new(),
@@ -1000,6 +1088,155 @@ mod test {
         Text, TextPrelim, TextRef, Transact, UndoManager, Update, Xml, XmlElementPrelim,
         XmlElementRef, XmlFragment, XmlTextPrelim,
     };
+
+    #[test]
+    fn undo_changed_xml_keeps_peer_text_and_identified_paragraph_scaffold() {
+        let doc = Doc::with_client_id(1);
+        let root = doc.get_or_insert_xml_fragment("default");
+        let mut options = Options::<()>::default();
+        options.preserve_changed_xml = true;
+        options.tracked_origins.insert("owner".into());
+        let mut manager = UndoManager::with_options(options);
+        manager.expand_scope(&doc, &root);
+        {
+            let mut tx = doc.transact_mut_with("owner");
+            let p = root.insert(&mut tx, 0, XmlElementPrelim::empty("paragraph"));
+            p.insert_attribute(&mut tx, "relaymarkId", "paragraph-id");
+            p.insert(&mut tx, 0, XmlTextPrelim::new("Hello"));
+        }
+        let peer = Doc::with_client_id(2);
+        let peer_root = peer.get_or_insert_xml_fragment("default");
+        peer.transact_mut()
+            .apply_update(
+                Update::decode_v1(
+                    &doc.transact()
+                        .encode_state_as_update_v1(&StateVector::default()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let p: XmlElementRef = peer_root
+            .get(&peer.transact(), 0)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let text: crate::XmlTextRef = p.get(&peer.transact(), 0).unwrap().try_into().unwrap();
+        text.insert(&mut peer.transact_mut(), 0, "Peer ");
+        doc.transact_mut_with("peer")
+            .apply_update(
+                Update::decode_v1(
+                    &peer
+                        .transact()
+                        .encode_state_as_update_v1(&StateVector::default()),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(manager.undo_blocking());
+        let tx = doc.transact();
+        assert_eq!(root.len(&tx), 1);
+        let p: XmlElementRef = root.get(&tx, 0).unwrap().try_into().unwrap();
+        assert_eq!(
+            p.get_attribute(&tx, "relaymarkId"),
+            Some("paragraph-id".into())
+        );
+        let text: crate::XmlTextRef = p.get(&tx, 0).unwrap().try_into().unwrap();
+        assert_eq!(text.get_string(&tx), "Peer ");
+        drop(tx);
+        assert!(manager.redo_blocking());
+        let tx = doc.transact();
+        let p: XmlElementRef = root.get(&tx, 0).unwrap().try_into().unwrap();
+        let text: crate::XmlTextRef = p.get(&tx, 0).unwrap().try_into().unwrap();
+        assert_eq!(text.get_string(&tx), "Peer Hello");
+    }
+
+    #[test]
+    fn undo_changed_xml_keeps_peer_widget_attribute_and_all_table_cells() {
+        for name in ["questionBlock", "table"] {
+            let doc = Doc::with_client_id(1);
+            let root = doc.get_or_insert_xml_fragment("default");
+            let mut options = Options::<()>::default();
+            options.preserve_changed_xml = true;
+            options.tracked_origins.insert("owner".into());
+            let mut manager = UndoManager::with_options(options);
+            manager.expand_scope(&doc, &root);
+            {
+                let mut tx = doc.transact_mut_with("owner");
+                let parent = root.insert(&mut tx, 0, XmlElementPrelim::empty(name));
+                parent.insert_attribute(&mut tx, "relaymarkId", "parent-id");
+                for index in 0..2 {
+                    let child = parent.insert(&mut tx, index, XmlElementPrelim::empty("paragraph"));
+                    child.insert_attribute(&mut tx, "relaymarkId", format!("child-{index}"));
+                    child.insert(&mut tx, 0, XmlTextPrelim::new("Owner"));
+                }
+            }
+            let peer = Doc::with_client_id(2);
+            let peer_root = peer.get_or_insert_xml_fragment("default");
+            peer.transact_mut()
+                .apply_update(
+                    Update::decode_v1(
+                        &doc.transact()
+                            .encode_state_as_update_v1(&StateVector::default()),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let parent: XmlElementRef = peer_root
+                .get(&peer.transact(), 0)
+                .unwrap()
+                .try_into()
+                .unwrap();
+            if name == "questionBlock" {
+                parent.insert_attribute(&mut peer.transact_mut(), "required", "true");
+            } else {
+                let child: XmlElementRef =
+                    parent.get(&peer.transact(), 1).unwrap().try_into().unwrap();
+                let text: crate::XmlTextRef =
+                    child.get(&peer.transact(), 0).unwrap().try_into().unwrap();
+                text.insert(&mut peer.transact_mut(), 0, "Peer ");
+            }
+            doc.transact_mut_with("peer")
+                .apply_update(
+                    Update::decode_v1(
+                        &peer
+                            .transact()
+                            .encode_state_as_update_v1(&StateVector::default()),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            assert!(manager.undo_blocking());
+            let tx = doc.transact();
+            assert_eq!(root.len(&tx), 1);
+            let parent: XmlElementRef = root.get(&tx, 0).unwrap().try_into().unwrap();
+            assert_eq!(
+                parent.get_attribute(&tx, "relaymarkId"),
+                Some("parent-id".into())
+            );
+            assert_eq!(parent.len(&tx), 2);
+            for index in 0..2 {
+                let child: XmlElementRef = parent.get(&tx, index).unwrap().try_into().unwrap();
+                assert_eq!(
+                    child.get_attribute(&tx, "relaymarkId"),
+                    Some(format!("child-{index}").into())
+                );
+                let text: crate::XmlTextRef = child.get(&tx, 0).unwrap().try_into().unwrap();
+                assert_eq!(
+                    text.get_string(&tx),
+                    if name == "table" && index == 1 {
+                        "Peer "
+                    } else {
+                        ""
+                    }
+                );
+            }
+            if name == "questionBlock" {
+                assert_eq!(parent.get_attribute(&tx, "required"), Some("true".into()));
+            }
+            drop(tx);
+            assert!(manager.redo_blocking());
+        }
+    }
 
     #[test]
     fn undo_text() {
