@@ -113,6 +113,125 @@ pub fn observe<T: ReadTxn>(
     Ok(runs)
 }
 
+/// A visible UTF-16 string run in its actual rich XML text branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleTextItemRun {
+    pub branch: BranchID,
+    pub item: ID,
+    pub count: u32,
+}
+
+/// Observe all currently visible string identities allocated since `before`,
+/// in XML document order. Traversal is bounded by structural/string items, not
+/// character count. Deleted ancestors, format markers and metadata maps do not
+/// contribute text. Admission/authorship and command-copy witnesses remain the
+/// host's responsibility. A future vector or exhausted traversal never yields a
+/// partial accounting result.
+pub fn observe_visible<T: ReadTxn>(
+    txn: &T,
+    scope: &BranchID,
+    before: &crate::StateVector,
+    max_steps: usize,
+) -> Result<Vec<VisibleTextItemRun>, TextItemError> {
+    use crate::block::ItemContent;
+    use crate::branch::Branch;
+    use crate::types::TypeRef;
+    let store = txn.store();
+    if store.offset_kind != crate::OffsetKind::Utf16
+        || store.pending_update().is_some()
+        || store.pending_ds().is_some()
+        || before
+            .iter()
+            .any(|(client, clock)| *clock > txn.state_vector().get(client))
+    {
+        return Err(TextItemError::Prestate);
+    }
+    fn step(budget: &mut usize) -> Result<(), TextItemError> {
+        *budget = budget.checked_sub(1).ok_or(TextItemError::Limit)?;
+        Ok(())
+    }
+    fn visit(
+        branch: &Branch,
+        before: &crate::StateVector,
+        depth: usize,
+        budget: &mut usize,
+        runs: &mut Vec<VisibleTextItemRun>,
+    ) -> Result<(), TextItemError> {
+        step(budget)?;
+        // A traversal resource boundary, independent of application schema depth.
+        if depth > 128 {
+            return Err(TextItemError::Limit);
+        }
+        let is_text = matches!(branch.type_ref(), TypeRef::XmlText);
+        if !is_text
+            && !matches!(
+                branch.type_ref(),
+                TypeRef::XmlElement(_) | TypeRef::XmlFragment | TypeRef::Undefined
+            )
+        {
+            return Err(TextItemError::Target);
+        }
+        let branch_id = branch.id();
+        let mut next = branch.start;
+        while let Some(item) = next {
+            step(budget)?;
+            next = item.right;
+            if item.is_deleted() {
+                continue;
+            }
+            match &item.content {
+                ItemContent::Type(child) if !is_text => {
+                    visit(child, before, depth + 1, budget, runs)?
+                }
+                ItemContent::Format(_, _) if is_text => {}
+                ItemContent::String(_) if is_text => {
+                    let end = item
+                        .id
+                        .clock
+                        .checked_add(item.len)
+                        .ok_or(TextItemError::Unprovable)?;
+                    let first = item.id.clock.max(before.get(&item.id.client));
+                    if first < end {
+                        let id = ID::new(item.id.client, first);
+                        let count = end - first;
+                        if let Some(prior) = runs.last_mut().filter(|run| {
+                            run.branch == branch_id
+                                && run.item.client == id.client
+                                && run.item.clock.checked_add(run.count) == Some(id.clock)
+                        }) {
+                            prior.count = prior
+                                .count
+                                .checked_add(count)
+                                .ok_or(TextItemError::Unprovable)?;
+                        } else {
+                            runs.push(VisibleTextItemRun {
+                                branch: branch_id.clone(),
+                                item: id,
+                                count,
+                            });
+                        }
+                    }
+                }
+                _ => return Err(TextItemError::Unprovable),
+            }
+        }
+        Ok(())
+    }
+    let branch = scope.get_branch(txn).ok_or(TextItemError::Target)?;
+    let mut budget = max_steps;
+    let mut ancestor = branch.item;
+    while let Some(item) = ancestor {
+        step(&mut budget)?;
+        if item.is_deleted() {
+            return Err(TextItemError::Target);
+        }
+        ancestor = item.parent.as_branch().ok_or(TextItemError::Target)?.item;
+    }
+    let mut runs = Vec::new();
+    visit(&branch, before, 0, &mut budget, &mut runs)?;
+    Ok(runs)
+}
+
 /// A direct retained UndoManager redone edge. This is engine identity evidence,
 /// never a claim about author, permission, operation ownership or equal prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,12 +468,88 @@ mod tests {
         };
         let branch = text.hook().id().clone();
         let runs = observe(&doc.transact(), &branch, 0, 250000, 8).unwrap();
+        let scope_runs = observe_visible(
+            &doc.transact(),
+            &root.hook().id(),
+            &StateVector::default(),
+            8,
+        )
+        .unwrap();
+        assert_eq!(scope_runs.len(), 1);
+        assert_eq!(scope_runs[0].count, 250000);
+        let mut future = doc.transact().state_vector();
+        future.inc_by(doc.client_id(), 1);
+        assert_eq!(
+            observe_visible(&doc.transact(), &root.hook().id(), &future, 8),
+            Err(TextItemError::Prestate)
+        );
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].count, 250000);
         root.remove_range(&mut doc.transact_mut(), 0, 1);
         assert_eq!(
             observe(&doc.transact(), &branch, 0, 1, 8),
             Err(TextItemError::Target)
+        );
+    }
+    #[test]
+    fn scope_observer_accounts_for_new_text_in_independent_rich_leaves() {
+        use crate::{SharedRef, XmlElementPrelim, XmlFragment, XmlTextPrelim};
+        let doc = Doc::with_options(Options {
+            client_id: crate::block::ClientID::new(7),
+            offset_kind: OffsetKind::Utf16,
+            skip_gc: true,
+            ..Options::default()
+        });
+        let root = doc.get_or_insert_xml_fragment("default");
+        let (label, option) = {
+            let mut tx = doc.transact_mut();
+            let q = root.push_back(&mut tx, XmlElementPrelim::empty("questionBlock"));
+            let l = q.push_back(&mut tx, XmlElementPrelim::empty("questionLabel"));
+            let label = l.push_back(&mut tx, XmlTextPrelim::new("A🌍Z"));
+            let o = q.push_back(&mut tx, XmlElementPrelim::empty("questionOption"));
+            let option = o.push_back(&mut tx, XmlTextPrelim::new("Choice"));
+            (label, option)
+        };
+        let before = doc.transact().state_vector();
+        assert_eq!(before.get(&doc.client_id()), 15);
+        label.insert(&mut doc.transact_mut(), 4, "!"); // merged string, clipped to post-vector clocks
+        option.insert(&mut doc.transact_mut(), 6, "🌍"); // a second, independently edited option must not be omitted
+        let tx = doc.transact();
+        let state = tx.encode_state_as_update_v1(&StateVector::default());
+        let runs = observe_visible(&tx, &root.hook().id(), &before, 100).unwrap();
+        assert_eq!(
+            runs,
+            vec![
+                VisibleTextItemRun {
+                    branch: label.hook().id().clone(),
+                    item: ID::new(crate::block::ClientID::new(7), 15),
+                    count: 1
+                },
+                VisibleTextItemRun {
+                    branch: option.hook().id().clone(),
+                    item: ID::new(crate::block::ClientID::new(7), 16),
+                    count: 2
+                }
+            ]
+        );
+        assert_eq!(tx.encode_state_as_update_v1(&StateVector::default()), state);
+        assert_eq!(
+            observe_visible(&tx, &root.hook().id(), &before, 1),
+            Err(TextItemError::Limit)
+        );
+        drop(tx);
+        option.remove_range(&mut doc.transact_mut(), 6, 2);
+        assert_eq!(
+            observe_visible(&doc.transact(), &root.hook().id(), &before, 100)
+                .unwrap()
+                .len(),
+            1
+        );
+        root.remove_range(&mut doc.transact_mut(), 0, 1);
+        assert!(
+            observe_visible(&doc.transact(), &root.hook().id(), &before, 100)
+                .unwrap()
+                .is_empty()
         );
     }
     #[test]
