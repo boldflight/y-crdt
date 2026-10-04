@@ -117,12 +117,11 @@ impl FromIterator<(ClientID, u32)> for StateVector {
 impl Decode for StateVector {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
         let len = decoder.read_var::<u32>()? as usize;
-        // Attempt to pre-allocate memory for the state vector. `len` is attacker-controlled
-        // (a few bytes can declare a huge count), so a fallible reservation turns an
-        // allocation bomb into a recoverable decode error instead of an abort. Mirrors the
-        // `try_reserve` pattern already used for blocks in `Update::decode`.
+        // Entry counts are untrusted. Reserve only a small initial window and
+        // grow with actually decoded entries; a tiny truncated buffer cannot
+        // reserve a huge virtual allocation merely by declaring a count.
         let mut sv = HashMap::with_hasher(BuildHasherDefault::default());
-        sv.try_reserve(len)?;
+        sv.try_reserve(len.min(1024))?;
         let mut i = 0;
         while i < len {
             let client: u64 = decoder.read_var()?;

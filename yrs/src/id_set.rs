@@ -27,7 +27,8 @@ impl Decode for Range<u32> {
     fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, Error> {
         let clock = decoder.read_ds_clock()?;
         let len = decoder.read_ds_len()?;
-        Ok(clock..(clock + len))
+        let end = clock.checked_add(len).ok_or(Error::UnexpectedValue)?;
+        Ok(clock..end)
     }
 }
 
@@ -636,6 +637,13 @@ pub(crate) mod test {
     }
 
     use std::ops::Range;
+
+    #[test]
+    fn snapshot_clock_overflow_is_a_decode_error_not_a_panic() {
+        // One client/range at u32::MAX with length one cannot have a valid end.
+        let bytes = [1, 7, 1, 255, 255, 255, 255, 15, 1, 0];
+        assert!(crate::Snapshot::decode_v1(&bytes).is_err());
+    }
 
     #[test]
     fn decode_rejects_range_length_amplification() {
