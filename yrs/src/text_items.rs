@@ -232,6 +232,158 @@ pub fn observe_visible<T: ReadTxn>(
     Ok(runs)
 }
 
+/// Exact current maintained XML topology and authored values. Empty text leaves
+/// and atoms remain explicit. This is generic engine observation, not a schema or
+/// authorization interpreter.
+#[derive(Debug, Clone, PartialEq)]
+pub enum XmlSnapshot {
+    Fragment {
+        root: std::sync::Arc<str>,
+        children: Vec<XmlSnapshot>,
+    },
+    Element {
+        id: ID,
+        name: std::sync::Arc<str>,
+        attributes: std::collections::HashMap<std::sync::Arc<str>, crate::Any>,
+        children: Vec<XmlSnapshot>,
+    },
+    Text {
+        id: ID,
+        runs: Vec<XmlTextItemState>,
+    },
+}
+#[derive(Debug, Clone, PartialEq)]
+pub struct XmlTextItemState {
+    pub item: ID,
+    pub count: u32,
+    pub text: String,
+    pub attributes: std::collections::HashMap<std::sync::Arc<str>, crate::Any>,
+}
+
+/// One read-only linked-item traversal of a settled UTF-16 rich XML root. Budget
+/// includes branches, list items and attributes; no per-character position lookup
+/// or partial result is used. Unsupported non-JSON/shared attribute values and
+/// non-XML embedded content refuse rather than disappear.
+pub fn observe_xml<T: ReadTxn>(
+    txn: &T,
+    scope: &BranchID,
+    max_steps: usize,
+) -> Result<XmlSnapshot, TextItemError> {
+    use crate::block::ItemContent;
+    use crate::branch::Branch;
+    use crate::types::TypeRef;
+    use crate::{Any, Out};
+    let store = txn.store();
+    if store.offset_kind != crate::OffsetKind::Utf16
+        || store.pending_update().is_some()
+        || store.pending_ds().is_some()
+    {
+        return Err(TextItemError::Prestate);
+    }
+    fn step(budget: &mut usize) -> Result<(), TextItemError> {
+        *budget = budget.checked_sub(1).ok_or(TextItemError::Limit)?;
+        Ok(())
+    }
+    fn visit(
+        branch: &Branch,
+        depth: usize,
+        budget: &mut usize,
+    ) -> Result<XmlSnapshot, TextItemError> {
+        step(budget)?;
+        if depth > 128 {
+            return Err(TextItemError::Limit);
+        }
+        let nested = match branch.id() {
+            BranchID::Nested(id) => Some(id),
+            _ => None,
+        };
+        match branch.type_ref() {
+            TypeRef::XmlText => {
+                let id = nested.ok_or(TextItemError::Target)?;
+                let mut attributes = std::collections::HashMap::new();
+                let mut runs = Vec::new();
+                let mut next = branch.start;
+                while let Some(item) = next {
+                    step(budget)?;
+                    next = item.right;
+                    if item.is_deleted() {
+                        continue;
+                    }
+                    match &item.content {
+                        ItemContent::Format(key, value) => {
+                            if matches!(value.as_ref(), Any::Null) {
+                                attributes.remove(key);
+                            } else {
+                                attributes.insert(key.clone(), value.as_ref().clone());
+                            }
+                        }
+                        ItemContent::String(value) => runs.push(XmlTextItemState {
+                            item: item.id,
+                            count: item.len,
+                            text: value.as_str().to_owned(),
+                            attributes: attributes.clone(),
+                        }),
+                        _ => return Err(TextItemError::Unprovable),
+                    }
+                }
+                Ok(XmlSnapshot::Text { id, runs })
+            }
+            TypeRef::XmlElement(_) | TypeRef::XmlFragment | TypeRef::Undefined => {
+                let mut attributes = std::collections::HashMap::new();
+                for (key, item) in &branch.map {
+                    step(budget)?;
+                    if item.is_deleted() {
+                        continue;
+                    }
+                    let Some(Out::Any(value)) = item.content.get_last() else {
+                        return Err(TextItemError::Unprovable);
+                    };
+                    attributes.insert(key.clone(), value);
+                }
+                let mut children = Vec::new();
+                let mut next = branch.start;
+                while let Some(item) = next {
+                    step(budget)?;
+                    next = item.right;
+                    if item.is_deleted() {
+                        continue;
+                    }
+                    let ItemContent::Type(child) = &item.content else {
+                        return Err(TextItemError::Unprovable);
+                    };
+                    children.push(visit(child, depth + 1, budget)?);
+                }
+                match (branch.id(), branch.type_ref()) {
+                    (BranchID::Root(root), TypeRef::XmlFragment | TypeRef::Undefined)
+                        if attributes.is_empty() =>
+                    {
+                        Ok(XmlSnapshot::Fragment { root, children })
+                    }
+                    (BranchID::Nested(id), TypeRef::XmlElement(name)) => Ok(XmlSnapshot::Element {
+                        id,
+                        name: name.clone(),
+                        attributes,
+                        children,
+                    }),
+                    _ => Err(TextItemError::Target),
+                }
+            }
+            _ => Err(TextItemError::Target),
+        }
+    }
+    let branch = scope.get_branch(txn).ok_or(TextItemError::Target)?;
+    let mut budget = max_steps;
+    let mut ancestor = branch.item;
+    while let Some(item) = ancestor {
+        step(&mut budget)?;
+        if item.is_deleted() {
+            return Err(TextItemError::Target);
+        }
+        ancestor = item.parent.as_branch().ok_or(TextItemError::Target)?.item;
+    }
+    visit(&branch, 0, &mut budget)
+}
+
 /// A direct retained UndoManager redone edge. This is engine identity evidence,
 /// never a claim about author, permission, operation ownership or equal prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -550,6 +702,131 @@ mod tests {
             observe_visible(&doc.transact(), &root.hook().id(), &before, 100)
                 .unwrap()
                 .is_empty()
+        );
+    }
+    #[test]
+    fn rich_snapshot_preserves_atom_attributes_empty_leaves_and_marked_unicode_item_identity() {
+        use crate::{SharedRef, Xml, XmlElementPrelim, XmlFragment, XmlTextPrelim};
+        let doc = Doc::with_options(Options {
+            client_id: crate::block::ClientID::new(7),
+            offset_kind: OffsetKind::Utf16,
+            skip_gc: true,
+            ..Options::default()
+        });
+        let root = doc.get_or_insert_xml_fragment("default");
+        let (paragraph, text, atom, empty) = {
+            let mut tx = doc.transact_mut();
+            let p = root.push_back(&mut tx, XmlElementPrelim::empty("paragraph"));
+            p.insert_attribute(
+                &mut tx,
+                "relaymarkId",
+                Any::from("b11111111111141118111111111111111"),
+            );
+            let text = p.push_back(&mut tx, XmlTextPrelim::new("A🌍Z"));
+            text.format(
+                &mut tx,
+                1,
+                2,
+                [(
+                    Arc::from("underline"),
+                    Any::Map(Arc::new(Default::default())),
+                )]
+                .into(),
+            );
+            let atom = p.push_back(&mut tx, XmlElementPrelim::empty("relayReference"));
+            atom.insert_attribute(
+                &mut tx,
+                "settings",
+                Any::Map(Arc::new(
+                    [(String::from("label"), Any::from("世界"))].into(),
+                )),
+            );
+            let empty = p.push_back(&mut tx, XmlTextPrelim::new(""));
+            (p, text, atom, empty)
+        };
+        let tx = doc.transact();
+        let state = tx.encode_state_as_update_v1(&StateVector::default());
+        let snapshot = observe_xml(&tx, &root.hook().id(), 100).unwrap();
+        let XmlSnapshot::Fragment { children, .. } = snapshot else {
+            panic!("root fragment")
+        };
+        let XmlSnapshot::Element {
+            id,
+            name,
+            attributes,
+            children,
+        } = &children[0]
+        else {
+            panic!("paragraph")
+        };
+        assert_eq!(
+            Some(*id),
+            match paragraph.hook().id() {
+                BranchID::Nested(id) => Some(*id),
+                _ => None,
+            }
+        );
+        assert_eq!(name.as_ref(), "paragraph");
+        assert_eq!(
+            attributes.get("relaymarkId"),
+            Some(&Any::from("b11111111111141118111111111111111"))
+        );
+        let XmlSnapshot::Text { id, runs } = &children[0] else {
+            panic!("text")
+        };
+        assert_eq!(
+            Some(*id),
+            match text.hook().id() {
+                BranchID::Nested(id) => Some(*id),
+                _ => None,
+            }
+        );
+        assert_eq!(
+            runs.iter()
+                .map(|r| (r.item.clock, r.count, r.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(3, 1, "A"), (4, 2, "🌍"), (6, 1, "Z")]
+        );
+        assert_eq!(
+            runs[1].attributes.get("underline"),
+            Some(&Any::Map(Arc::new(Default::default())))
+        );
+        assert!(runs[0].attributes.is_empty());
+        assert!(runs[2].attributes.is_empty());
+        let XmlSnapshot::Element {
+            id,
+            name,
+            attributes,
+            children: atom_children,
+        } = &children[1]
+        else {
+            panic!("atom")
+        };
+        assert_eq!(
+            Some(*id),
+            match atom.hook().id() {
+                BranchID::Nested(id) => Some(*id),
+                _ => None,
+            }
+        );
+        assert_eq!(name.as_ref(), "relayReference");
+        assert!(atom_children.is_empty());
+        assert!(matches!(attributes.get("settings"), Some(Any::Map(_))));
+        let XmlSnapshot::Text { id, runs } = &children[2] else {
+            panic!("empty")
+        };
+        assert_eq!(
+            Some(*id),
+            match empty.hook().id() {
+                BranchID::Nested(id) => Some(*id),
+                _ => None,
+            }
+        );
+        assert!(runs.is_empty());
+        assert_eq!(tx.encode_state_as_update_v1(&StateVector::default()), state);
+        assert_eq!(
+            observe_xml(&tx, &root.hook().id(), 1),
+            Err(TextItemError::Limit)
         );
     }
     #[test]
