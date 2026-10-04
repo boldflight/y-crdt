@@ -113,6 +113,169 @@ pub fn observe<T: ReadTxn>(
     Ok(runs)
 }
 
+/// A direct retained UndoManager redone edge. This is engine identity evidence,
+/// never a claim about author, permission, operation ownership or equal prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoredTextItemRun {
+    pub source_type: BranchID,
+    pub source: TextItemRun,
+    pub destination_type: BranchID,
+    pub destination: TextItemRun,
+}
+
+/// Observe direct redone edges whose destination was allocated after `before`.
+/// Capture immediately after the owned operation: Yjs update bytes do not encode
+/// ephemeral redone pointers. The host must retain the resulting immutable receipt.
+/// Deleted source ancestors are valid retained evidence; destinations must remain
+/// live under the exact supplied scope. Equal text without a redone edge is ignored.
+pub fn observe_restored<T: ReadTxn>(
+    txn: &T,
+    scope: &BranchID,
+    before: &crate::StateVector,
+    max_steps: usize,
+) -> Result<Vec<RestoredTextItemRun>, TextItemError> {
+    use crate::block::ItemContent;
+    use crate::branch::BranchPtr;
+    use crate::types::TypeRef;
+    use crate::OffsetKind;
+    let store = txn.store();
+    if !store.skip_gc
+        || store.offset_kind != OffsetKind::Utf16
+        || store.pending_update().is_some()
+        || store.pending_ds().is_some()
+    {
+        return Err(TextItemError::Prestate);
+    }
+    let current = txn.state_vector();
+    if before
+        .iter()
+        .any(|(client, clock)| *clock > current.get(client))
+    {
+        return Err(TextItemError::Prestate);
+    }
+    let mut budget = max_steps;
+    fn step(budget: &mut usize) -> Result<(), TextItemError> {
+        *budget = budget.checked_sub(1).ok_or(TextItemError::Limit)?;
+        Ok(())
+    }
+    fn scoped(
+        mut branch: BranchPtr,
+        scope: &BranchID,
+        live: bool,
+        budget: &mut usize,
+    ) -> Result<bool, TextItemError> {
+        loop {
+            step(budget)?;
+            if &branch.id() == scope {
+                return Ok(true);
+            }
+            let Some(item) = branch.item else {
+                return Ok(false);
+            };
+            if live && item.is_deleted() {
+                return Ok(false);
+            }
+            branch = *item.parent.as_branch().ok_or(TextItemError::Unprovable)?;
+        }
+    }
+    let mut result = Vec::new();
+    // Struct traversal is bounded independently from output size and string length.
+    for (_, blocks) in store.blocks.iter() {
+        for block in blocks.iter() {
+            step(&mut budget)?;
+            let Some(source) = block.as_item() else {
+                continue;
+            };
+            let Some(target) = source.redone else {
+                continue;
+            };
+            if !matches!(source.content, ItemContent::String(_))
+                || source.id.clock >= before.get(&source.id.client)
+                || target.clock < before.get(&target.client)
+            {
+                continue;
+            }
+            let count = source.len;
+            if source
+                .id
+                .clock
+                .checked_add(count)
+                .filter(|end| *end <= before.get(&source.id.client))
+                .is_none()
+            {
+                return Err(TextItemError::Unprovable);
+            }
+            let source_parent = source.parent.as_branch().ok_or(TextItemError::Unprovable)?;
+            if !matches!(
+                source_parent.type_ref(),
+                TypeRef::Text | TypeRef::XmlText | TypeRef::Undefined
+            ) || !scoped(*source_parent, scope, false, &mut budget)?
+            {
+                continue;
+            }
+            let mut offset = 0;
+            while offset < count {
+                step(&mut budget)?;
+                let destination_id = ID::new(
+                    target.client,
+                    target
+                        .clock
+                        .checked_add(offset)
+                        .ok_or(TextItemError::Unprovable)?,
+                );
+                let destination = store
+                    .blocks
+                    .get_item_clean_start(&destination_id)
+                    .ok_or(TextItemError::Unprovable)?;
+                let ptr = destination.ptr;
+                if ptr.is_deleted() || !matches!(ptr.content, ItemContent::String(_)) {
+                    return Err(TextItemError::Unprovable);
+                }
+                let parent = ptr.parent.as_branch().ok_or(TextItemError::Unprovable)?;
+                if !matches!(
+                    parent.type_ref(),
+                    TypeRef::Text | TypeRef::XmlText | TypeRef::Undefined
+                ) || !scoped(*parent, scope, true, &mut budget)?
+                {
+                    return Err(TextItemError::Target);
+                }
+                let n = (count - offset).min(destination.len());
+                if n == 0 {
+                    return Err(TextItemError::Unprovable);
+                }
+                result.push(RestoredTextItemRun {
+                    source_type: source_parent.id(),
+                    source: TextItemRun {
+                        item: ID::new(source.id.client, source.id.clock + offset),
+                        count: n,
+                    },
+                    destination_type: parent.id(),
+                    destination: TextItemRun {
+                        item: destination_id,
+                        count: n,
+                    },
+                });
+                offset = offset.checked_add(n).ok_or(TextItemError::Unprovable)?;
+            }
+        }
+    }
+    result.sort_by_key(|r| (r.destination.item.client, r.destination.item.clock));
+    for adjacent in result.windows(2) {
+        let a = &adjacent[0].destination;
+        let b = &adjacent[1].destination;
+        if a.item.client == b.item.client
+            && a.item
+                .clock
+                .checked_add(a.count)
+                .ok_or(TextItemError::Unprovable)?
+                > b.item.clock
+        {
+            return Err(TextItemError::Unprovable);
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +355,69 @@ mod tests {
         assert_eq!(
             observe(&doc.transact(), &branch, 0, 1, 8),
             Err(TextItemError::Target)
+        );
+    }
+    #[test]
+    fn restored_runs_require_actual_redone_edges_and_exclude_identical_peer_text() {
+        use crate::{SharedRef, UndoManager, XmlElementPrelim, XmlFragment, XmlTextPrelim};
+        let doc = Doc::with_options(Options {
+            offset_kind: OffsetKind::Utf16,
+            skip_gc: true,
+            ..Options::default()
+        });
+        let root = doc.get_or_insert_xml_fragment("default");
+        let text = {
+            let mut tx = doc.transact_mut();
+            let q = root.push_back(&mut tx, XmlElementPrelim::empty("questionOption"));
+            q.push_back(&mut tx, XmlTextPrelim::new("A🌍Z"))
+        };
+        let scope = root.hook().id().clone();
+        let branch = text.hook().id().clone();
+        let original = observe(&doc.transact(), &branch, 1, 2, 100).unwrap()[0].item;
+        let mut manager = UndoManager::new();
+        manager.expand_scope(&doc, &root);
+        manager.include_origin("owner");
+        text.remove_range(&mut doc.transact_mut_with("owner"), 1, 2);
+        manager.reset();
+        text.insert(&mut doc.transact_mut_with("peer"), 1, "🌍");
+        let before = doc.transact().state_vector();
+        assert!(observe_restored(&doc.transact(), &scope, &before, 1000)
+            .unwrap()
+            .is_empty());
+        assert!(manager.undo_blocking());
+        let tx = doc.transact();
+        let state = tx.encode_state_as_update_v1(&StateVector::default());
+        let copies = observe_restored(&tx, &scope, &before, 1000).unwrap();
+        assert_eq!(copies.len(), 1);
+        assert_eq!(copies[0].source.item, original);
+        assert_eq!(copies[0].source.count, 2);
+        assert_eq!(copies[0].source_type, branch);
+        assert_eq!(copies[0].destination_type, branch);
+        assert!(copies[0].destination.item.clock >= before.get(&copies[0].destination.item.client));
+        assert_eq!(copies[0].destination.count, 2);
+        assert_eq!(tx.encode_state_as_update_v1(&StateVector::default()), state);
+        assert_eq!(
+            observe_restored(&tx, &scope, &before, 1),
+            Err(TextItemError::Limit)
+        );
+        drop(tx);
+        assert!(manager.redo_blocking());
+        let before_second = doc.transact().state_vector();
+        assert!(manager.undo_blocking());
+        let second = observe_restored(&doc.transact(), &scope, &before_second, 1000).unwrap();
+        assert_eq!(second.len(), 1);
+        assert_ne!(second[0].destination.item, copies[0].destination.item);
+        assert_ne!(second[0].source.item, original); // the direct maintained edge, not a text-matched root shortcut
+        assert_eq!(
+            observe_restored(
+                &doc.transact(),
+                &BranchID::Root(Arc::from("elsewhere")),
+                &before_second,
+                1000
+            )
+            .unwrap()
+            .len(),
+            0
         );
     }
 }
