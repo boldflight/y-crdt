@@ -254,7 +254,19 @@ pub fn inspect<T: ReadTxn>(
             }
         }
     }
+    let mut clocks = current.iter().collect::<Vec<_>>();
+    clocks.sort_by_key(|(client, _)| **client);
+    let clocks = clocks
+        .into_iter()
+        .map(|(client, clock)| {
+            object([
+                ("client", Any::from(client.get() as i64)),
+                ("clock", Any::from(*clock)),
+            ])
+        })
+        .collect::<Vec<_>>();
     Ok(object([
+        ("state_vector", Any::from(clocks)),
         ("structs", Any::from(structs)),
         ("declared_deletes", Any::from(declared)),
         ("deleted_items", Any::from(deleted)),
@@ -291,6 +303,14 @@ mod tests {
         assert!(json.contains("declared_deletes"));
         assert!(json.contains("relaymark"));
         let exact: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            exact["state_vector"],
+            serde_json::json!([{"client":doc.client_id().get(),"clock":11}])
+        );
+        let empty = super::inspect(&tx, &[0, 0], 1_000_000).unwrap();
+        let empty: serde_json::Value = serde_json::to_value(&empty).unwrap();
+        assert_eq!(empty["state_vector"], exact["state_vector"]);
+        assert_eq!(empty["structs"], serde_json::json!([]));
         assert_eq!(exact["structs"].as_array().unwrap().len(), 2);
         assert_eq!(exact["structs"][0]["count"], 6);
         assert_eq!(
