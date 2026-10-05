@@ -43,7 +43,11 @@ impl Serialize for Any {
             }
             Any::Map(entries) => {
                 let mut map = serializer.serialize_map(Some(entries.len()))?;
-                for (key, value) in entries.iter() {
+                // `write_json` encodes authored format attributes as JSON strings.
+                // Keep nested map order deterministic without changing CRDT items.
+                let mut ordered: Vec<_> = entries.iter().collect();
+                ordered.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                for (key, value) in ordered {
                     map.serialize_entry(key, value)?;
                 }
                 map.end()

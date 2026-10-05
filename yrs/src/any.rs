@@ -188,7 +188,11 @@ impl Any {
                 // TYPE 118: Map
                 encoder.write_u8(118);
                 encoder.write_var(map.len() as u64);
-                for (key, value) in map.as_ref() {
+                // HashMap insertion/iteration order changes across independent reopens.
+                // Canonical derived encoding leaves retained original bytes untouched.
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+                for (key, value) in entries {
                     encoder.write_string(&key);
                     value.encode(encoder);
                 }
@@ -1030,6 +1034,36 @@ mod test {
     use crate::any::Any;
     use crate::encoding::read::Cursor;
     use crate::Number;
+
+    #[test]
+    fn retained_nested_any_json_encoding_is_canonical() {
+        let original = r#"{"z":{"title":"kept","href":"https://example.com"},"a":[{"b":2,"a":1}]}"#;
+        let expected = r#"{"a":[{"a":1,"b":2}],"z":{"href":"https://example.com","title":"kept"}}"#;
+        for _ in 0..32 {
+            let value = Any::from_json(original).unwrap();
+            let mut json = String::new();
+            value.to_json(&mut json);
+            assert_eq!(json, expected);
+        }
+        assert!(original.starts_with("{\"z\":"));
+    }
+
+    #[test]
+    fn retained_nested_any_binary_encoding_is_canonical() {
+        // Original legacy bytes intentionally have b before a, d before c.
+        // Canonical derived encoding sorts keys recursively without rewriting originals.
+        let original = [118, 2, 1, b'b', 125, 2, 1, b'a', 118, 2, 1, b'd', 125, 4, 1, b'c', 125, 3];
+        let retained = original;
+        let expected = [118, 2, 1, b'a', 118, 2, 1, b'c', 125, 3, 1, b'd', 125, 4, 1, b'b', 125, 2];
+        for _ in 0..32 {
+            let value = Any::decode(&mut Cursor::new(&original)).unwrap();
+            let mut bytes = Vec::new();
+            value.encode(&mut bytes);
+            assert_eq!(bytes, expected);
+            assert_eq!(Any::decode(&mut Cursor::new(&bytes)).unwrap(), value);
+        }
+        assert_eq!(original, retained);
+    }
 
     #[test]
     fn decode_map_rejects_length_amplification() {
