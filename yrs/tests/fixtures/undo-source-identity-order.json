@@ -1,0 +1,250 @@
+[
+  {
+    "parent_client": 90,
+    "child_client": 10,
+    "mode": "attributes",
+    "writer_client": 1001,
+    "initial": "02045a0007010764656661756c74030970617261677261706828005a000b72656c61796d61726b496401770c7061726167726170682d696428005a0005666972737401770c6265666f72652d666972737428005a00067365636f6e6401770d6265666f72652d7365636f6e64040a0007005a000606000a0004626f6c64027b7d840a010a4f776e657220f09f8c8d860a0904626f6c64046e756c6c00",
+    "command": "0102e90700a85a0201770b6f776e65642d6669727374a85a0301770c6f776e65642d7365636f6e64015a010202",
+    "peer": "0106d20f00875a0003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d6964015a010202",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0102e90702a8e9070001770c6265666f72652d6669727374a8e9070101770d6265666f72652d7365636f6e6402e9070100025a010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90704a8e9070201770b6f776e65642d6669727374a8e9070301770c6f776e65642d7365636f6e6402e9070100045a010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0102e90706a8e9070401770c6265666f72652d6669727374a8e9070501770d6265666f72652d7365636f6e6402e9070100065a010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90708a8e9070601770b6f776e65642d6669727374a8e9070701770c6f776e65642d7365636f6e6402e9070100085a010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 90,
+    "child_client": 10,
+    "mode": "nested",
+    "writer_client": 1001,
+    "initial": "02045a0007010764656661756c74030970617261677261706828005a000b72656c61796d61726b496401770c7061726167726170682d696428005a0005666972737401770c6265666f72652d666972737428005a00067365636f6e6401770d6265666f72652d7365636f6e64040a0007005a000606000a0004626f6c64027b7d840a010a4f776e657220f09f8c8d860a0904626f6c64046e756c6c00",
+    "command": "00025a0100040a01000b",
+    "peer": "0106d20f00475a0003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d6964025a0100040a01000b",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0108e90700c7d20f005a0003097061726167726170680700e90700060600e9070104626f6c64027b7d84e907020a4f776e657220f09f8c8d86e9070a04626f6c64046e756c6c2800e907000b72656c61796d61726b496401770c7061726167726170682d69642800e9070005666972737401770c6265666f72652d66697273742800e90700067365636f6e6401770d6265666f72652d7365636f6e64025a0100040a01000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701000f5a0100040a01000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0108e9070fc7d20f00e9070003097061726167726170680700e9070f060600e9071004626f6c64027b7d84e907110a4f776e657220f09f8c8d86e9071904626f6c64046e756c6c2800e9070f0b72656c61796d61726b496401770c7061726167726170682d69642800e9070f05666972737401770c6265666f72652d66697273742800e9070f067365636f6e6401770d6265666f72652d7365636f6e6403e90701000f5a0100040a01000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701001e5a0100040a01000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 10,
+    "child_client": 90,
+    "mode": "attributes",
+    "writer_client": 1001,
+    "initial": "02045a0007000a000606005a0004626f6c64027b7d845a010a4f776e657220f09f8c8d865a0904626f6c64046e756c6c040a0007010764656661756c74030970617261677261706828000a000b72656c61796d61726b496401770c7061726167726170682d696428000a0005666972737401770c6265666f72652d666972737428000a00067365636f6e6401770d6265666f72652d7365636f6e6400",
+    "command": "0102e90700a80a0201770b6f776e65642d6669727374a80a0301770c6f776e65642d7365636f6e64010a010202",
+    "peer": "0106d20f00870a0003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d6964010a010202",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0102e90702a8e9070001770c6265666f72652d6669727374a8e9070101770d6265666f72652d7365636f6e6402e9070100020a010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90704a8e9070201770b6f776e65642d6669727374a8e9070301770c6f776e65642d7365636f6e6402e9070100040a010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0102e90706a8e9070401770c6265666f72652d6669727374a8e9070501770d6265666f72652d7365636f6e6402e9070100060a010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90708a8e9070601770b6f776e65642d6669727374a8e9070701770c6f776e65642d7365636f6e6402e9070100080a010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 10,
+    "child_client": 90,
+    "mode": "nested",
+    "writer_client": 1001,
+    "initial": "02045a0007000a000606005a0004626f6c64027b7d845a010a4f776e657220f09f8c8d865a0904626f6c64046e756c6c040a0007010764656661756c74030970617261677261706828000a000b72656c61796d61726b496401770c7061726167726170682d696428000a0005666972737401770c6265666f72652d666972737428000a00067365636f6e6401770d6265666f72652d7365636f6e6400",
+    "command": "00025a01000b0a010004",
+    "peer": "0106d20f00470a0003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d6964025a01000b0a010004",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0108e90700c7d20f000a0003097061726167726170682800e907000b72656c61796d61726b496401770c7061726167726170682d69642800e9070005666972737401770c6265666f72652d66697273742800e90700067365636f6e6401770d6265666f72652d7365636f6e640700e90700060600e9070404626f6c64027b7d84e907050a4f776e657220f09f8c8d86e9070d04626f6c64046e756c6c025a01000b0a010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701000f5a01000b0a010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0108e9070fc7d20f00e9070003097061726167726170682800e9070f0b72656c61796d61726b496401770c7061726167726170682d69642800e9070f05666972737401770c6265666f72652d66697273742800e9070f067365636f6e6401770d6265666f72652d7365636f6e640700e9070f060600e9071304626f6c64027b7d84e907140a4f776e657220f09f8c8d86e9071c04626f6c64046e756c6c03e90701000f5a01000b0a010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701001e5a01000b0a010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 991,
+    "child_client": 3,
+    "mode": "attributes",
+    "writer_client": 1001,
+    "initial": "0204df070007010764656661756c7403097061726167726170682800df07000b72656c61796d61726b496401770c7061726167726170682d69642800df070005666972737401770c6265666f72652d66697273742800df0700067365636f6e6401770d6265666f72652d7365636f6e640403000700df0700060600030004626f6c64027b7d8403010a4f776e657220f09f8c8d86030904626f6c64046e756c6c00",
+    "command": "0102e90700a8df070201770b6f776e65642d6669727374a8df070301770c6f776e65642d7365636f6e6401df07010202",
+    "peer": "0106d20f0087df070003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d696401df07010202",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0102e90702a8e9070001770c6265666f72652d6669727374a8e9070101770d6265666f72652d7365636f6e6402e907010002df07010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90704a8e9070201770b6f776e65642d6669727374a8e9070301770c6f776e65642d7365636f6e6402e907010004df07010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0102e90706a8e9070401770c6265666f72652d6669727374a8e9070501770d6265666f72652d7365636f6e6402e907010006df07010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90708a8e9070601770b6f776e65642d6669727374a8e9070701770c6f776e65642d7365636f6e6402e907010008df07010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 991,
+    "child_client": 3,
+    "mode": "nested",
+    "writer_client": 1001,
+    "initial": "0204df070007010764656661756c7403097061726167726170682800df07000b72656c61796d61726b496401770c7061726167726170682d69642800df070005666972737401770c6265666f72652d66697273742800df0700067365636f6e6401770d6265666f72652d7365636f6e640403000700df0700060600030004626f6c64027b7d8403010a4f776e657220f09f8c8d86030904626f6c64046e756c6c00",
+    "command": "0002df070100040301000b",
+    "peer": "0106d20f0047df070003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d696402df070100040301000b",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0108e90700c7d20f00df070003097061726167726170680700e90700060600e9070104626f6c64027b7d84e907020a4f776e657220f09f8c8d86e9070a04626f6c64046e756c6c2800e907000b72656c61796d61726b496401770c7061726167726170682d69642800e9070005666972737401770c6265666f72652d66697273742800e90700067365636f6e6401770d6265666f72652d7365636f6e6402df070100040301000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701000fdf070100040301000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0108e9070fc7d20f00e9070003097061726167726170680700e9070f060600e9071004626f6c64027b7d84e907110a4f776e657220f09f8c8d86e9071904626f6c64046e756c6c2800e9070f0b72656c61796d61726b496401770c7061726167726170682d69642800e9070f05666972737401770c6265666f72652d66697273742800e9070f067365636f6e6401770d6265666f72652d7365636f6e6403e90701000fdf070100040301000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701001edf070100040301000b",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 3,
+    "child_client": 991,
+    "mode": "attributes",
+    "writer_client": 1001,
+    "initial": "0204df070007000300060600df070004626f6c64027b7d84df07010a4f776e657220f09f8c8d86df070904626f6c64046e756c6c04030007010764656661756c740309706172616772617068280003000b72656c61796d61726b496401770c7061726167726170682d69642800030005666972737401770c6265666f72652d666972737428000300067365636f6e6401770d6265666f72652d7365636f6e6400",
+    "command": "0102e90700a8030201770b6f776e65642d6669727374a8030301770c6f776e65642d7365636f6e640103010202",
+    "peer": "0106d20f0087030003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d69640103010202",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0102e90702a8e9070001770c6265666f72652d6669727374a8e9070101770d6265666f72652d7365636f6e6402e90701000203010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90704a8e9070201770b6f776e65642d6669727374a8e9070301770c6f776e65642d7365636f6e6402e90701000403010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0102e90706a8e9070401770c6265666f72652d6669727374a8e9070501770d6265666f72652d7365636f6e6402e90701000603010202",
+        "xml": "<paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0102e90708a8e9070601770b6f776e65642d6669727374a8e9070701770c6f776e65642d7365636f6e6402e90701000803010202",
+        "xml": "<paragraph first=\"owned-first\" relaymarkId=\"paragraph-id\" second=\"owned-second\"><bold>Owner 🌍</bold></paragraph><paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  },
+  {
+    "parent_client": 3,
+    "child_client": 991,
+    "mode": "nested",
+    "writer_client": 1001,
+    "initial": "0204df070007000300060600df070004626f6c64027b7d84df07010a4f776e657220f09f8c8d86df070904626f6c64046e756c6c04030007010764656661756c740309706172616772617068280003000b72656c61796d61726b496401770c7061726167726170682d69642800030005666972737401770c6265666f72652d666972737428000300067365636f6e6401770d6265666f72652d7365636f6e6400",
+    "command": "0002df0701000b03010004",
+    "peer": "0106d20f0047030003097061726167726170680700d20f00060600d20f01066974616c6963027b7d84d20f02075065657220cea986d20f08066974616c6963046e756c6c2800d20f000b72656c61796d61726b4964017707706565722d696402df0701000b03010004",
+    "effects": [
+      {
+        "kind": "undo",
+        "update": "0108e90700c7d20f00030003097061726167726170682800e907000b72656c61796d61726b496401770c7061726167726170682d69642800e9070005666972737401770c6265666f72652d66697273742800e90700067365636f6e6401770d6265666f72652d7365636f6e640700e90700060600e9070404626f6c64027b7d84e907050a4f776e657220f09f8c8d86e9070d04626f6c64046e756c6c02df0701000b03010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701000fdf0701000b03010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      },
+      {
+        "kind": "undo",
+        "update": "0108e9070fc7d20f00e9070003097061726167726170682800e9070f0b72656c61796d61726b496401770c7061726167726170682d69642800e9070f05666972737401770c6265666f72652d66697273742800e9070f067365636f6e6401770d6265666f72652d7365636f6e640700e9070f060600e9071304626f6c64027b7d84e907140a4f776e657220f09f8c8d86e9071c04626f6c64046e756c6c03e90701000fdf0701000b03010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph><paragraph first=\"before-first\" relaymarkId=\"paragraph-id\" second=\"before-second\"><bold>Owner 🌍</bold></paragraph>"
+      },
+      {
+        "kind": "redo",
+        "update": "0003e90701001edf0701000b03010004",
+        "xml": "<paragraph relaymarkId=\"peer-id\"><italic>Peer Ω</italic></paragraph>"
+      }
+    ]
+  }
+]

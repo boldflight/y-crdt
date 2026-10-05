@@ -706,7 +706,11 @@ where
             }
         }
 
-        for &ptr in to_redo.iter() {
+        // Keep membership for recursive parent/redone dependencies, but make
+        // fresh allocation independent of HashSet/serialized interval order.
+        let mut ordered_redo: Vec<_> = to_redo.iter().copied().collect();
+        ordered_redo.sort_unstable_by_key(|ptr| (ptr.id().client, ptr.id().clock));
+        for ptr in ordered_redo {
             let mut ptr = ptr;
             change_performed |= ptr
                 .redo(&mut txn, &to_redo, &item.insertions, stack, other)
@@ -1088,6 +1092,174 @@ mod test {
         Text, TextPrelim, TextRef, Transact, UndoManager, Update, Xml, XmlElementPrelim,
         XmlElementRef, XmlFragment, XmlTextPrelim,
     };
+
+    #[test]
+    fn owned_inverse_matches_yjs_original_identity_order_and_recursive_dependencies() {
+        fn bytes(value: &serde_json::Value) -> Vec<u8> {
+            value
+                .as_str()
+                .unwrap()
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect()
+        }
+        let fixtures: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/undo-source-identity-order.json"
+        ))
+        .unwrap();
+        for fixture in fixtures.as_array().unwrap() {
+            let doc = Doc::with_options(crate::doc::Options {
+                skip_gc: true,
+                client_id: ClientID::new(fixture["writer_client"].as_u64().unwrap()),
+                ..crate::doc::Options::default()
+            });
+            let root = doc.get_or_insert_xml_fragment("default");
+            doc.transact_mut()
+                .apply_update(Update::decode_v1(&bytes(&fixture["initial"])).unwrap())
+                .unwrap();
+            let mut options = Options::<()>::default();
+            options.preserve_changed_xml = true;
+            options.tracked_origins.insert("owner".into());
+            let mut manager = UndoManager::with_options(options);
+            manager.expand_scope(&doc, &root);
+            doc.transact_mut_with("owner")
+                .apply_update(Update::decode_v1(&bytes(&fixture["command"])).unwrap())
+                .unwrap();
+            doc.transact_mut_with("peer")
+                .apply_update(Update::decode_v1(&bytes(&fixture["peer"])).unwrap())
+                .unwrap();
+            for effect in fixture["effects"].as_array().unwrap() {
+                let before = doc.transact().state_vector();
+                assert!(if effect["kind"] == "undo" {
+                    manager.undo_blocking()
+                } else {
+                    manager.redo_blocking()
+                });
+                let tx = doc.transact();
+                let actual = Update::decode_v1(&tx.encode_state_as_update_v1(&before)).unwrap();
+                let expected = Update::decode_v1(&bytes(&effect["update"])).unwrap();
+                assert_eq!(
+                    actual,
+                    expected,
+                    "source clients {:?}/{:?}, {:?}, {:?}",
+                    fixture["parent_client"],
+                    fixture["child_client"],
+                    fixture["mode"],
+                    effect["kind"]
+                );
+                let peer: XmlElementRef = (0..root.len(&tx))
+                    .find_map(|index| {
+                        let p: XmlElementRef = root.get(&tx, index).unwrap().try_into().unwrap();
+                        (p.get_attribute(&tx, "relaymarkId") == Some("peer-id".into())).then_some(p)
+                    })
+                    .expect("retained peer paragraph");
+                let text: crate::XmlTextRef = peer.get(&tx, 0).unwrap().try_into().unwrap();
+                assert_eq!(text.get_string(&tx), "<italic>Peer Ω</italic>");
+            }
+        }
+    }
+
+    #[test]
+    fn owned_attribute_inverse_allocates_by_original_item_identity() {
+        // Two independently created branches, deliberately inserted in the
+        // opposite source-client order. Undo restores four authored fields.
+        for (left_client, right_client) in [(90, 10), (10, 90), (991, 3), (3, 991)] {
+            for _ in 0..16 {
+                let doc = Doc::with_client_id(1001);
+                let root = doc.get_or_insert_xml_fragment("default");
+                for client in [left_client, right_client] {
+                    let seed = Doc::with_client_id(client);
+                    let seed_root = seed.get_or_insert_xml_fragment("default");
+                    {
+                        let mut tx = seed.transact_mut();
+                        let p = seed_root.insert(&mut tx, 0, XmlElementPrelim::empty("paragraph"));
+                        p.insert_attribute(&mut tx, "relaymarkId", format!("paragraph-{client}"));
+                        p.insert_attribute(&mut tx, "first", "original-first");
+                        p.insert_attribute(&mut tx, "second", "original-second");
+                        p.insert(&mut tx, 0, XmlTextPrelim::new("Owner 🌍"));
+                    }
+                    doc.transact_mut()
+                        .apply_update(
+                            Update::decode_v1(
+                                &seed
+                                    .transact()
+                                    .encode_state_as_update_v1(&StateVector::default()),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                }
+                let mut options = Options::<()>::default();
+                options.preserve_changed_xml = true;
+                options.tracked_origins.insert("owner".into());
+                let mut manager = UndoManager::with_options(options);
+                manager.expand_scope(&doc, &root);
+                let mut originals = Vec::new();
+                for index in 0..2 {
+                    let p: XmlElementRef = root
+                        .get(&doc.transact(), index)
+                        .unwrap()
+                        .try_into()
+                        .unwrap();
+                    let branch: &crate::branch::Branch = p.as_ref();
+                    for name in ["first", "second"] {
+                        originals.push((
+                            branch.map.get(name).unwrap().id().clone(),
+                            p.clone(),
+                            name,
+                        ));
+                    }
+                }
+                {
+                    let mut tx = doc.transact_mut_with("owner");
+                    for (_, p, name) in &originals {
+                        p.insert_attribute(&mut tx, *name, "owned-change");
+                    }
+                }
+                // A different origin adds text and formatting to a retained
+                // child. All inverse cycles must preserve that contribution.
+                {
+                    let mut tx = doc.transact_mut_with("peer");
+                    let p: XmlElementRef = root.get(&tx, 0).unwrap().try_into().unwrap();
+                    let text: crate::XmlTextRef = p.get(&tx, 0).unwrap().try_into().unwrap();
+                    text.insert(&mut tx, 0, "Peer ");
+                    text.format(
+                        &mut tx,
+                        0,
+                        5,
+                        Attrs::from([("bold".into(), Any::Bool(true))]),
+                    );
+                }
+                originals.sort_by_key(|(id, _, _)| (id.client, id.clock));
+                for _ in 0..3 {
+                    let before = doc.transact().state_vector().get(&ClientID::new(1001));
+                    assert!(manager.undo_blocking());
+                    for (index, (_, p, name)) in originals.iter().enumerate() {
+                        let branch: &crate::branch::Branch = p.as_ref();
+                        assert_eq!(
+                            branch.map.get(*name).unwrap().id().clock,
+                            before + index as u32
+                        );
+                    }
+                    let tx = doc.transact();
+                    let p: XmlElementRef = root.get(&tx, 0).unwrap().try_into().unwrap();
+                    let text: crate::XmlTextRef = p.get(&tx, 0).unwrap().try_into().unwrap();
+                    assert_eq!(text.get_string(&tx), "<bold>Peer </bold>Owner 🌍");
+                    assert_eq!(
+                        text.diff(&tx, YChange::identity)[0]
+                            .attributes
+                            .as_ref()
+                            .unwrap()
+                            .get("bold"),
+                        Some(&Any::Bool(true))
+                    );
+                    drop(tx);
+                    assert!(manager.redo_blocking());
+                }
+            }
+        }
+    }
 
     #[test]
     fn undo_changed_xml_keeps_peer_text_and_identified_paragraph_scaffold() {
