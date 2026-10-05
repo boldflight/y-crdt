@@ -6,7 +6,7 @@ use crate::slice::BlockSlice;
 use crate::sync::Clock;
 use crate::transaction::Origin;
 use crate::types::TypeRef;
-use crate::{Doc, IdSet, Observer, Transact, TransactionMut, Uuid, ID};
+use crate::{Doc, IdSet, Observer, ReadTxn, Transact, TransactionMut, Uuid, ID};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -430,6 +430,162 @@ where
         self.clear_internal(false, true)
     }
 
+    /// Retires exact current whole stack positions on a settled retained owner.
+    /// The caller validates scoped receipt metadata before selecting positions.
+    /// Global redone links are preserved for surviving parent/position recovery.
+    /// Invalid membership or unavailable dependencies refuses before release.
+    pub fn retire_history_items(
+        &mut self,
+        undo_indices: &[usize],
+        redo_indices: &[usize],
+    ) -> Result<(usize, usize), &'static str> {
+        let inner = self.inner_mut();
+        let valid = |indices: &[usize], len: usize| {
+            indices.len() <= 16_384
+                && indices.iter().all(|index| *index < len)
+                && indices.windows(2).all(|pair| pair[0] < pair[1])
+        };
+        if inner.undoing || inner.redoing {
+            return Err("History retirement requires a settled manager");
+        }
+        if !valid(undo_indices, inner.undo_stack.len())
+            || !valid(redo_indices, inner.redo_stack.len())
+            || undo_indices.len() + redo_indices.len() > 16_384
+        {
+            return Err("Invalid history retirement membership");
+        }
+        let result = (undo_indices.len(), redo_indices.len());
+        if result == (0, 0) {
+            return Ok(result);
+        }
+        let undo: HashSet<usize> = undo_indices.iter().copied().collect();
+        let redo: HashSet<usize> = redo_indices.iter().copied().collect();
+        let mut docs: Vec<Doc> = inner.docs.values().cloned().collect();
+        docs.sort_by_key(|doc| doc.guid());
+        if docs.iter().any(|doc| !doc.skip_gc()) {
+            return Err("History retirement requires retained documents");
+        }
+        // Acquire every owner before altering any sidecar or stack. Keeping the
+        // read guards follows the existing clear-stack keep-bit owner policy.
+        let txns: Vec<_> = docs
+            .iter()
+            .map(|doc| doc.try_transact().map_err(|_| "History owner is busy"))
+            .collect::<Result<_, _>>()?;
+        if txns
+            .iter()
+            .any(|txn| txn.store().pending_update().is_some() || txn.store().pending_ds().is_some())
+        {
+            return Err("History retirement requires settled retained state");
+        }
+        // Prevalidate retired documents too: a later missing document must not
+        // fail after the first requested group's keep flags have been released.
+        for (stack, removed) in [(&inner.undo_stack, &undo), (&inner.redo_stack, &redo)] {
+            for index in removed {
+                if !docs.iter().any(|doc| doc.guid() == stack[*index].doc) {
+                    return Err("Unavailable retired history document");
+                }
+            }
+        }
+        let mut retained = HashSet::<ItemPtr>::new();
+        for (stack, removed) in [(&inner.undo_stack, &undo), (&inner.redo_stack, &redo)] {
+            for (index, item) in stack.iter().enumerate() {
+                if removed.contains(&index) {
+                    continue;
+                }
+                let position = docs
+                    .iter()
+                    .position(|doc| doc.guid() == item.doc)
+                    .ok_or("Unavailable surviving history document")?;
+                let txn = &txns[position];
+                for intervals in [&item.insertions, &item.deletions] {
+                    let mut slices = intervals.blocks();
+                    while let Some(slice) = slices.next(txn) {
+                        let ptr = slice
+                            .as_item()
+                            .ok_or("Unavailable surviving history item")?;
+                        if !inner
+                            .scope
+                            .iter()
+                            .any(|branch| branch.is_parent_of(Some(ptr)))
+                        {
+                            return Err("Unavailable surviving history scope");
+                        }
+                        let mut pending = vec![ptr];
+                        while let Some(next) = pending.pop() {
+                            if matches!(next.content, ItemContent::Deleted(_)) {
+                                return Err("Unavailable surviving history content");
+                            }
+                            if retained.contains(&next) {
+                                continue;
+                            }
+                            if retained.len() >= 1_000_000 {
+                                return Err("Surviving history dependency limit");
+                            }
+                            retained.insert(next);
+                            if let Some(parent) =
+                                next.parent.as_branch().and_then(|branch| branch.item)
+                            {
+                                pending.push(parent);
+                            }
+                            if let Some(redone) = next.redone {
+                                pending.push(
+                                    txn.store()
+                                        .blocks
+                                        .get_item(&redone)
+                                        .ok_or("Unavailable surviving redone dependency")?,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (stack, removed) in [(&inner.undo_stack, &undo), (&inner.redo_stack, &redo)] {
+            for index in removed {
+                let item = &stack[*index];
+                let position = docs
+                    .iter()
+                    .position(|doc| doc.guid() == item.doc)
+                    .ok_or("Unavailable retired history document")?;
+                Self::clear_stack_item(&inner.scope, &txns[position], item);
+            }
+        }
+        // Set EVERY ancestor bit. keep(true) short-circuits at an already-kept
+        // child and cannot repair a shared ancestor released by another group.
+        for mut item in retained {
+            item.info.set_keep();
+        }
+        let mut index = 0;
+        inner.undo_stack.retain(|_| {
+            let keep = !undo.contains(&index);
+            index += 1;
+            keep
+        });
+        index = 0;
+        inner.redo_stack.retain(|_| {
+            let keep = !redo.contains(&index);
+            index += 1;
+            keep
+        });
+        inner.last_change = 0;
+        Ok(result)
+    }
+
+    fn clear_stack_item<T: ReadTxn>(
+        scope: &HashSet<BranchPtr>,
+        txn: &T,
+        stack_item: &StackItem<M>,
+    ) {
+        let mut deleted = stack_item.deletions.blocks();
+        while let Some(slice) = deleted.next(txn) {
+            if let Some(item) = slice.as_item() {
+                if scope.iter().any(|branch| branch.is_parent_of(Some(item))) {
+                    item.keep(false);
+                }
+            }
+        }
+    }
+
     fn clear_stack(
         scope: &HashSet<BranchPtr>,
         docs: &HashMap<Uuid, Doc>,
@@ -437,16 +593,9 @@ where
     ) -> bool {
         let len = stack.len();
         for stack_item in stack.drain(0..len) {
-            let mut deleted = stack_item.deletions.blocks();
             if let Some(doc) = docs.get(&stack_item.doc) {
                 let txn = doc.transact();
-                while let Some(slice) = deleted.next(&txn) {
-                    if let Some(item) = slice.as_item() {
-                        if scope.iter().any(|b| b.is_parent_of(Some(item))) {
-                            item.keep(false);
-                        }
-                    }
-                }
+                Self::clear_stack_item(scope, &txn, &stack_item);
             }
         }
         len != 0
@@ -1092,6 +1241,89 @@ mod test {
         Text, TextPrelim, TextRef, Transact, UndoManager, Update, Xml, XmlElementPrelim,
         XmlElementRef, XmlFragment, XmlTextPrelim,
     };
+
+    #[test]
+    fn owned_retirement_keeps_surviving_shared_parent_and_redone_chain() {
+        let doc = Doc::with_options(crate::doc::Options {
+            skip_gc: true,
+            offset_kind: crate::OffsetKind::Utf16,
+            ..crate::doc::Options::default()
+        });
+        let root = doc.get_or_insert_xml_fragment("default");
+        let (paragraph, text) = {
+            let mut tx = doc.transact_mut();
+            let p = root.insert(&mut tx, 0, XmlElementPrelim::empty("paragraph"));
+            p.insert_attribute(&mut tx, "relaymarkId", "retained-paragraph");
+            let text = p.insert(&mut tx, 0, XmlTextPrelim::new("A🌍Z"));
+            (p, text)
+        };
+        let mut options = Options::<()>::default();
+        options.tracked_origins.insert("owner".into());
+        let mut manager = UndoManager::with_options(options);
+        manager.expand_scope(&doc, &root);
+        text.remove_range(&mut doc.transact_mut_with("owner"), 0, 1);
+        manager.reset();
+        text.remove_range(&mut doc.transact_mut_with("owner"), 0, 2);
+        assert!(manager.undo_blocking());
+        assert!(manager.redo_blocking());
+        manager.reset();
+        text.remove_range(&mut doc.transact_mut_with("owner"), 0, 1);
+        assert!(manager.undo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "Z");
+        let original = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        assert_eq!(manager.undo_stack().len(), 2);
+        assert_eq!(manager.redo_stack().len(), 1);
+        assert_eq!(manager.retire_history_items(&[0], &[0]), Ok((1, 1)));
+        assert_eq!(
+            doc.transact()
+                .encode_state_as_update_v1(&StateVector::default()),
+            original
+        );
+        assert_eq!(manager.undo_stack().len(), 1);
+        assert_eq!(manager.redo_stack().len(), 0);
+        let text_branch: &crate::branch::Branch = text.as_ref();
+        let paragraph_branch: &crate::branch::Branch = paragraph.as_ref();
+        assert!(text_branch.item.unwrap().info.is_keep());
+        assert!(paragraph_branch.item.unwrap().info.is_keep());
+        assert!(manager.undo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "🌍Z");
+        assert!(manager.redo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "Z");
+        assert!(manager.undo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "🌍Z");
+        assert!(!manager.undo_blocking());
+        text.insert(&mut doc.transact_mut_with("owner"), 3, "Ω");
+        assert!(manager.undo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "🌍Z");
+        assert!(manager.redo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "🌍ZΩ");
+    }
+
+    #[test]
+    fn owned_retirement_rejects_invalid_complete_membership_unchanged() {
+        let doc = Doc::with_options(crate::doc::Options {
+            skip_gc: true,
+            ..crate::doc::Options::default()
+        });
+        let text = doc.get_or_insert_text("text");
+        let mut manager = UndoManager::new();
+        manager.expand_scope(&doc, &text);
+        text.insert(&mut doc.transact_mut(), 0, "Keep");
+        let original = doc
+            .transact()
+            .encode_state_as_update_v1(&StateVector::default());
+        assert!(manager.retire_history_items(&[0, 1], &[]).is_err());
+        assert_eq!(manager.undo_stack().len(), 1);
+        assert_eq!(
+            doc.transact()
+                .encode_state_as_update_v1(&StateVector::default()),
+            original
+        );
+        assert!(manager.undo_blocking());
+        assert_eq!(text.get_string(&doc.transact()), "");
+    }
 
     #[test]
     fn owned_inverse_matches_yjs_original_identity_order_and_recursive_dependencies() {
