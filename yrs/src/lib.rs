@@ -652,6 +652,7 @@ pub mod undo;
 pub mod format_event;
 pub mod text_items;
 pub mod snapshot_frontier;
+pub mod retained_history;
 pub mod update_footprint;
 
 pub use crate::alt::{
